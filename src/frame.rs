@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{BufRead as _, Cursor},
+    io::{BufRead, Cursor},
 };
 
 use tokio::io::AsyncReadExt;
@@ -28,28 +28,28 @@ impl Method {
 }
 
 pub enum Version {
-    Http0_9,
-    Http1_0,
+    // Http0_9,
+    // Http1_0,
     Http1_1,
-    Http2_0,
+    // Http2_0,
 }
 
 impl Version {
     pub fn parse(&self) -> String {
         match self {
-            Self::Http0_9 => "HTTP/0.9".into(),
-            Self::Http1_0 => "HTTP/1.0".into(),
+            // Self::Http0_9 => "HTTP/0.9".into(),
+            // Self::Http1_0 => "HTTP/1.0".into(),
             Self::Http1_1 => "HTTP/1.1".into(),
-            Self::Http2_0 => "HTTP/2.0".into(),
+            // Self::Http2_0 => "HTTP/2.0".into(),
         }
     }
 
     pub fn compose(version: &str) -> Option<Self> {
         match version {
-            "HTTP/0.9" => Some(Self::Http0_9),
-            "HTTP/1.0" => Some(Self::Http1_0),
+            // "HTTP/0.9" => Some(Self::Http0_9),
+            // "HTTP/1.0" => Some(Self::Http1_0),
             "HTTP/1.1" => Some(Self::Http1_1),
-            "HTTP/2.0" => Some(Self::Http2_0),
+            // "HTTP/2.0" => Some(Self::Http2_0),
             _ => None,
         }
     }
@@ -88,7 +88,90 @@ impl StatusCode {
     }
 }
 
+pub enum DataFrame {
+    Text,
+    Binary,
+}
+
+impl DataFrame {
+    pub fn parse(data_frame: &Self) -> u8 {
+        match data_frame {
+            Self::Text => 1,
+            Self::Binary => 2,
+        }
+    }
+
+    pub fn compose(val: u8) -> Option<Self> {
+        match val {
+            1 => Some(Self::Text),
+            2 => Some(Self::Binary),
+            _ => None,
+        }
+    }
+}
+
+pub enum ControlFrame {
+    Close,
+    Ping,
+    Pong,
+}
+
+impl ControlFrame {
+    pub fn parse(control_frame: &Self) -> u8 {
+        match control_frame {
+            Self::Close => 8,
+            Self::Ping => 9,
+            Self::Pong => 10,
+        }
+    }
+
+    pub fn compose(val: u8) -> Option<Self> {
+        match val {
+            8 => Some(Self::Close),
+            9 => Some(Self::Ping),
+            10 => Some(Self::Pong),
+            _ => None,
+        }
+    }
+}
+
+pub enum Opcode {
+    Continuation,
+    DataFrame(DataFrame),
+    ControlFrame(ControlFrame),
+}
+
+impl Opcode {
+    pub fn parse(opcode: &Opcode) -> u8 {
+        match opcode {
+            Opcode::Continuation => 0,
+            Opcode::DataFrame(val) => DataFrame::parse(val),
+            Opcode::ControlFrame(val) => ControlFrame::parse(val),
+        }
+    }
+
+    pub fn compose(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(Self::Continuation),
+            1 => Some(Self::DataFrame(DataFrame::Text)),
+            2 => Some(Self::DataFrame(DataFrame::Binary)),
+            8 => Some(Self::ControlFrame(ControlFrame::Close)),
+            9 => Some(Self::ControlFrame(ControlFrame::Ping)),
+            10 => Some(Self::ControlFrame(ControlFrame::Pong)),
+            _ => None,
+        }
+    }
+}
+
 pub type HeaderMap = HashMap<String, String>;
+
+pub struct WebSocketFrame {
+    pub fin: u8,
+    pub opcode: Opcode,
+    pub masked: bool,
+    pub masking_key: [u8; 4],
+    pub payload: Vec<u8>,
+}
 
 pub enum Frame {
     HandshakeRequest {
@@ -102,6 +185,8 @@ pub enum Frame {
         version: Version,
         headers: HeaderMap,
     },
+    WebSocketRequest(WebSocketFrame),
+    WebSocketResponse(WebSocketFrame),
 }
 
 impl Frame {
@@ -111,12 +196,11 @@ impl Frame {
 
         /* GET */
         if buf[0..3].eq(&[0x47, 0x45, 0x54]) {
-            if let Some(frame) = Self::parse_handshake_request(&mut buf) {
-                return Some(frame);
-            }
+            return Self::parse_handshake_request(&mut buf);
+        } else {
+            println!("Web socket request: {:?}", buf);
+            return Self::parse_websocket_frame(&mut buf);
         }
-
-        None
     }
 
     fn parse_handshake_request(buf: &Vec<u8>) -> Option<Self> {
@@ -124,7 +208,6 @@ impl Frame {
         let mut headers: HeaderMap = HashMap::new();
 
         let lines: Vec<_> = buf.lines().map(|x| x.unwrap()).collect();
-        println!("reading request: {:?}", lines);
 
         let request = &lines[0];
         let request_parts: Vec<_> = request.split(" ").collect();
@@ -149,4 +232,64 @@ impl Frame {
             headers,
         })
     }
+
+    fn parse_websocket_frame(buf: &Vec<u8>) -> Option<Frame> {
+        let mut idx: usize = 0;
+        let fin = buf[idx] & 0x80;
+
+        let opcode = match Opcode::compose(buf[idx] & 0xf) {
+            Some(val) => val,
+            None => return None,
+        };
+        idx += 1;
+
+        let masked = (buf[idx] & 0x80) == 1;
+        // if !masked {
+        //     return None;
+        // }
+
+        let mut payload_len = (buf[idx] & 0x7f) as usize;
+        idx += 1;
+
+        payload_len = match payload_len {
+            126 => {
+                let val = read_u16_be(&buf[idx..idx + 1]) as usize;
+                idx += 2;
+                val
+            }
+            127 => {
+                let val = read_u32_be(&buf[idx..idx + 3]) as usize;
+                idx += 4;
+                val
+            }
+            _ => payload_len,
+        };
+
+        let masking_key = [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]];
+        idx += 4;
+
+        let mut payload = Vec::with_capacity(payload_len);
+        for i in 0..payload_len {
+            payload.push(buf[idx] ^ masking_key[i % 4]);
+            idx += 1;
+        }
+
+        Some(Self::WebSocketRequest(WebSocketFrame {
+            fin,
+            opcode,
+            masked,
+            masking_key,
+            payload,
+        }))
+    }
+}
+
+pub fn read_u16_be(buf: &[u8]) -> u16 {
+    assert_eq!(buf.len(), 2);
+    (buf[0] as u16) << 8 | buf[1] as u16
+}
+
+pub fn read_u32_be(buf: &[u8]) -> u32 {
+    assert_eq!(buf.len(), 4);
+    (buf[0] as u32) << 24 | (buf[1] as u32) << 16 | (buf[0] as u32) << 8 | buf[1] as u32
 }

@@ -8,20 +8,12 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::frame;
-
-pub enum State {
-    Open,
-    Closed,
-    Handshake,
-    HandshakeDone,
-}
+use crate::frame::{self, Opcode};
 
 //TODO: Implement Dispose
 pub struct Connection {
     stream: BufWriter<TcpStream>,
     buffer: BytesMut,
-    state: State,
 }
 
 impl Connection {
@@ -29,7 +21,6 @@ impl Connection {
         Self {
             stream: BufWriter::new(stream),
             buffer: BytesMut::with_capacity(4096),
-            state: State::Open,
         }
     }
 
@@ -55,15 +46,9 @@ impl Connection {
     async fn parse_frame(&mut self) -> io::Result<Option<Frame>> {
         let mut buf = Cursor::new(self.buffer.chunk());
 
-        println!("{:?}", buf);
         if let Some(frame) = Frame::parse(&mut buf).await {
             let len = buf.position() as usize;
             buf.set_position(0);
-
-            match frame {
-                Frame::HandshakeRequest { .. } => self.state = State::Handshake,
-                Frame::HandshakeResponse { .. } => self.state = State::HandshakeDone,
-            }
 
             self.buffer.advance(len);
             return Ok(Some(frame));
@@ -95,6 +80,32 @@ impl Connection {
                 }
 
                 self.stream.write_all(b"\r\n").await?;
+                self.stream.flush().await?;
+
+                Ok(Some(()))
+            }
+            Frame::WebSocketRequest(request) => {
+                let mut buf: Vec<u8> = Vec::new();
+
+                buf.write_u8(request.fin << 7 | Opcode::parse(&request.opcode) << 4)
+                    .await?;
+
+                let payload_len = request.payload.len();
+                if payload_len <= 125 {
+                    buf.write_u8((payload_len as u8) << 7).await?;
+                } else if payload_len <= 1 << 16 {
+                    buf.write_u8(126).await?;
+                    buf.write_u16(payload_len as u16).await?;
+                } else {
+                    buf.write_u8(127).await?;
+                    buf.write_u32(payload_len as u32).await?;
+                }
+
+                println!("response: {:?}", buf);
+
+                buf.write_all(&request.payload).await?;
+
+                self.stream.write_all(&buf).await?;
                 self.stream.flush().await?;
 
                 Ok(Some(()))
