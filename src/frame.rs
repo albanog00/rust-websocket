@@ -266,8 +266,8 @@ impl Frame {
                 val
             }
             127 => {
-                let val = read_u32_be(&buf[idx..idx + 3]) as usize;
-                idx += 4;
+                let val = read_u64_be(&buf[idx..idx + 7]) as usize;
+                idx += 8;
                 val
             }
             _ => payload_len,
@@ -297,7 +297,14 @@ pub fn read_u16_be(buf: &[u8]) -> u16 {
     (buf[0] as u16) << 8 | buf[1] as u16
 }
 
-pub fn read_u32_be(buf: &[u8]) -> u32 {
-    assert_eq!(buf.len(), 4);
-    (buf[0] as u32) << 24 | (buf[1] as u32) << 16 | (buf[0] as u32) << 8 | buf[1] as u32
+pub fn read_u64_be(buf: &[u8]) -> u64 {
+    assert_eq!(buf.len(), 8);
+    (buf[0] as u64) << 56
+        | (buf[1] as u64) << 48
+        | (buf[2] as u64) << 40
+        | (buf[3] as u64) << 32
+        | (buf[4] as u64) << 24
+        | (buf[5] as u64) << 16
+        | (buf[6] as u64) << 8
+        | buf[7] as u64
 }
