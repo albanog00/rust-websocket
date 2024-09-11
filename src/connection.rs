@@ -87,7 +87,7 @@ impl Connection {
             }
             Frame::WebSocketResponse(response) => {
                 self.stream
-                    .write_u8(129 | Opcode::parse(&response.opcode))
+                    .write_u8(128 | Opcode::parse(&response.opcode))
                     .await?;
 
                 let payload_len = response.payload.len();
