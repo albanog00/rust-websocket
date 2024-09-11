@@ -102,9 +102,6 @@ impl Connection {
                 }
 
                 self.stream.write_all(&response.payload).await?;
-
-                println!("{:?}", self.stream.buffer());
-
                 self.stream.flush().await?;
 
                 Ok(Some(()))

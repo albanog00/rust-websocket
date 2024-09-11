@@ -206,7 +206,6 @@ impl Frame {
         if buf[0..3].eq(&[0x47, 0x45, 0x54]) {
             return Self::parse_handshake_request(&mut buf);
         } else {
-            println!("Web socket request: {:?}", buf);
             return Self::parse_websocket_frame(&mut buf);
         }
     }

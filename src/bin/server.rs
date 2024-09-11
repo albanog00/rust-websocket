@@ -28,7 +28,7 @@ async fn main() {
         let clients = clients.clone();
 
         tokio::spawn(async move {
-            handle_connection(socket, sock_addr, clients).await;
+            handle_connection(socket, sock_addr, &clients).await;
         });
     }
 }
@@ -36,9 +36,11 @@ async fn main() {
 async fn handle_connection(
     socket: TcpStream,
     sock_addr: SocketAddr,
-    clients: Arc<Mutex<HashSet<SocketAddr>>>,
+    clients: &Arc<Mutex<HashSet<SocketAddr>>>,
 ) {
     {
+        println!("handling {}", sock_addr);
+
         let mut socket = socket;
 
         {
