@@ -11,6 +11,7 @@ use tokio::{
 use crate::frame::{self, Opcode};
 
 //TODO: Implement Dispose
+#[derive(Debug)]
 pub struct Connection {
     stream: BufWriter<TcpStream>,
     buffer: BytesMut,
@@ -84,28 +85,26 @@ impl Connection {
 
                 Ok(Some(()))
             }
-            Frame::WebSocketRequest(request) => {
-                let mut buf: Vec<u8> = Vec::new();
-
-                buf.write_u8(request.fin << 7 | Opcode::parse(&request.opcode) << 4)
+            Frame::WebSocketResponse(response) => {
+                self.stream
+                    .write_u8(129 | Opcode::parse(&response.opcode))
                     .await?;
 
-                let payload_len = request.payload.len();
+                let payload_len = response.payload.len();
                 if payload_len <= 125 {
-                    buf.write_u8((payload_len as u8) << 7).await?;
+                    self.stream.write_u8(payload_len as u8).await?;
                 } else if payload_len <= 1 << 16 {
-                    buf.write_u8(126).await?;
-                    buf.write_u16(payload_len as u16).await?;
+                    self.stream.write_u8(126).await?;
+                    self.stream.write_u16(payload_len as u16).await?;
                 } else {
-                    buf.write_u8(127).await?;
-                    buf.write_u32(payload_len as u32).await?;
+                    self.stream.write_u8(127).await?;
+                    self.stream.write_u32(payload_len as u32).await?;
                 }
 
-                println!("response: {:?}", buf);
+                self.stream.write_all(&response.payload).await?;
 
-                buf.write_all(&request.payload).await?;
+                println!("{:?}", self.stream.buffer());
 
-                self.stream.write_all(&buf).await?;
                 self.stream.flush().await?;
 
                 Ok(Some(()))

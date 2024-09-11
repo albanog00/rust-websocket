@@ -5,6 +5,7 @@ use std::{
 
 use tokio::io::AsyncReadExt;
 
+#[derive(Debug)]
 pub enum Method {
     GET,
     POST,
@@ -27,6 +28,7 @@ impl Method {
     }
 }
 
+#[derive(Debug)]
 pub enum Version {
     // Http0_9,
     // Http1_0,
@@ -55,6 +57,7 @@ impl Version {
     }
 }
 
+#[derive(Debug)]
 pub enum StatusCode {
     SwitchingProtocols,
     OK,
@@ -88,6 +91,7 @@ impl StatusCode {
     }
 }
 
+#[derive(Debug)]
 pub enum DataFrame {
     Text,
     Binary,
@@ -110,6 +114,7 @@ impl DataFrame {
     }
 }
 
+#[derive(Debug)]
 pub enum ControlFrame {
     Close,
     Ping,
@@ -135,6 +140,7 @@ impl ControlFrame {
     }
 }
 
+#[derive(Debug)]
 pub enum Opcode {
     Continuation,
     DataFrame(DataFrame),
@@ -165,6 +171,7 @@ impl Opcode {
 
 pub type HeaderMap = HashMap<String, String>;
 
+#[derive(Debug)]
 pub struct WebSocketFrame {
     pub fin: u8,
     pub opcode: Opcode,
@@ -173,6 +180,7 @@ pub struct WebSocketFrame {
     pub payload: Vec<u8>,
 }
 
+#[derive(Debug)]
 pub enum Frame {
     HandshakeRequest {
         method: Method,

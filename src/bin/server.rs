@@ -7,7 +7,7 @@ use std::{
 use connection::Connection;
 
 use base64::{prelude::BASE64_STANDARD, Engine};
-use frame::{Frame, HeaderMap, StatusCode, Version};
+use frame::{Frame, HeaderMap, StatusCode, Version, WebSocketFrame};
 use sha1::{Digest, Sha1};
 use tokio::io::{self, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -73,6 +73,17 @@ async fn handle_connection(
                     }
                     Err(_) => todo!(),
                 },
+                Frame::WebSocketRequest(request) => {
+                    let response = Frame::WebSocketResponse(WebSocketFrame {
+                        fin: request.fin,
+                        opcode: request.opcode,
+                        masked: false,
+                        masking_key: [0; 4],
+                        payload: "Hi client!".into(),
+                    });
+
+                    connection.write_frame(&response).await.unwrap();
+                }
                 _ => return,
             };
         }

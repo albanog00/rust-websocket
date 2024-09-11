@@ -7,7 +7,7 @@
 
     ws.onopen = () => {
         console.log("Connection opened")
-        ws.send("Hi server, please send me the score of yesterday's game")
+        ws.send("Hi server!")
     }
 
     ws.onmessage = (event) => {
