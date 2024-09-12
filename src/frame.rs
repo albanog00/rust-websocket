@@ -92,38 +92,21 @@ impl StatusCode {
 }
 
 #[derive(Debug)]
-pub enum DataFrame {
+pub enum Opcode {
+    Continuation,
     Text,
     Binary,
-}
-
-impl DataFrame {
-    pub fn parse(data_frame: &Self) -> u8 {
-        match data_frame {
-            Self::Text => 1,
-            Self::Binary => 2,
-        }
-    }
-
-    pub fn compose(val: u8) -> Option<Self> {
-        match val {
-            1 => Some(Self::Text),
-            2 => Some(Self::Binary),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum ControlFrame {
     Close,
     Ping,
     Pong,
 }
 
-impl ControlFrame {
-    pub fn parse(control_frame: &Self) -> u8 {
-        match control_frame {
+impl Opcode {
+    pub fn parse(opcode: &Opcode) -> u8 {
+        match opcode {
+            Opcode::Continuation => 0,
+            Self::Text => 1,
+            Self::Binary => 2,
             Self::Close => 8,
             Self::Ping => 9,
             Self::Pong => 10,
@@ -132,38 +115,12 @@ impl ControlFrame {
 
     pub fn compose(val: u8) -> Option<Self> {
         match val {
+            0 => Some(Self::Continuation),
+            1 => Some(Self::Text),
+            2 => Some(Self::Binary),
             8 => Some(Self::Close),
             9 => Some(Self::Ping),
             10 => Some(Self::Pong),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum Opcode {
-    Continuation,
-    DataFrame(DataFrame),
-    ControlFrame(ControlFrame),
-}
-
-impl Opcode {
-    pub fn parse(opcode: &Opcode) -> u8 {
-        match opcode {
-            Opcode::Continuation => 0,
-            Opcode::DataFrame(val) => DataFrame::parse(val),
-            Opcode::ControlFrame(val) => ControlFrame::parse(val),
-        }
-    }
-
-    pub fn compose(val: u8) -> Option<Self> {
-        match val {
-            0 => Some(Self::Continuation),
-            1 => Some(Self::DataFrame(DataFrame::Text)),
-            2 => Some(Self::DataFrame(DataFrame::Binary)),
-            8 => Some(Self::ControlFrame(ControlFrame::Close)),
-            9 => Some(Self::ControlFrame(ControlFrame::Ping)),
-            10 => Some(Self::ControlFrame(ControlFrame::Pong)),
             _ => None,
         }
     }
