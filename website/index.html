@@ -16,6 +16,7 @@
     }
 
     ws.onclose = (event) => {
+        console.log(event)
         console.log("Connection closed", event.code, event.reason, event.wasClean)
     }
 

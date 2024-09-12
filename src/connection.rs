@@ -1,31 +1,96 @@
-use std::io::Cursor;
+use std::{
+    collections::HashMap,
+    io::{Cursor, Error, ErrorKind},
+};
 
+use base64::{prelude::BASE64_STANDARD, Engine};
 use frame::{Frame, StatusCode, Version};
 
 use bytes::{Buf, BytesMut};
+use sha1::{Digest, Sha1};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, BufWriter},
     net::TcpStream,
 };
 
-use crate::frame::{self, Opcode};
+use crate::frame::{self, HeaderMap, Opcode};
 
 //TODO: Implement Dispose
 #[derive(Debug)]
 pub struct Connection {
     stream: BufWriter<TcpStream>,
     buffer: BytesMut,
+    closed: bool,
 }
 
 impl Connection {
-    pub fn new(stream: TcpStream) -> Self {
+    fn new(stream: TcpStream) -> Self {
         Self {
             stream: BufWriter::new(stream),
             buffer: BytesMut::with_capacity(4096),
+            closed: false,
         }
     }
 
+    pub async fn accept(socket: TcpStream) -> io::Result<Self> {
+        let mut connection = Self::new(socket);
+
+        match connection.read_frame().await.unwrap() {
+            Some(Frame::HandshakeRequest { headers, .. }) => {
+                let key = Self::handle_handshake(&headers)?;
+                let mut header_map = HashMap::new();
+
+                header_map.insert("Upgrade".into(), "websocket".into());
+                header_map.insert("Connection".into(), "Upgrade".into());
+                header_map.insert("Sec-WebSocket-Accept".into(), key.into());
+
+                let response = Frame::HandshakeResponse {
+                    status_code: StatusCode::SwitchingProtocols,
+                    version: Version::Http1_1,
+                    headers: header_map,
+                };
+
+                connection.write_frame(&response).await.unwrap();
+                Ok(connection)
+            }
+            _ => Err(Error::new(
+                ErrorKind::ConnectionRefused,
+                "Invalid upgrade request",
+            )),
+        }
+    }
+
+    fn handle_handshake(headers: &HeaderMap) -> io::Result<String> {
+        const MAGIC: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+        let key = match headers.get("Sec-WebSocket-Key") {
+            Some(key) => key.to_owned(),
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "handshake failed with client",
+                ))
+            }
+        };
+
+        let mut hasher = Sha1::new();
+        hasher.update(key);
+        hasher.update(MAGIC);
+        let handshake_key = BASE64_STANDARD.encode(hasher.finalize());
+
+        Ok(handshake_key)
+    }
+
+    pub async fn close(&mut self) {
+        self.closed = true;
+        self.stream.shutdown().await.unwrap();
+    }
+
     pub async fn read_frame(&mut self) -> io::Result<Option<Frame>> {
+        if self.closed {
+            return Ok(None);
+        }
+
         loop {
             if 0 == self.stream.read_buf(&mut self.buffer).await? {
                 if self.buffer.is_empty() {
@@ -103,6 +168,14 @@ impl Connection {
 
                 self.stream.write_all(&response.payload).await?;
                 self.stream.flush().await?;
+
+                match response.opcode {
+                    Opcode::Close => {
+                        println!("closing connection...");
+                        self.close().await
+                    }
+                    _ => {}
+                };
 
                 Ok(Some(()))
             }
