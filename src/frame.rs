@@ -81,6 +81,7 @@ impl StatusCode {
 
     pub fn compose(code: i32) -> Option<Self> {
         match code {
+            101 => Some(Self::SwitchingProtocols),
             200 => Some(Self::OK),
             400 => Some(Self::BadRequest),
             403 => Some(Self::Forbidden),
@@ -104,7 +105,7 @@ pub enum Opcode {
 impl Opcode {
     pub fn parse(opcode: &Opcode) -> u8 {
         match opcode {
-            Opcode::Continuation => 0,
+            Self::Continuation => 0,
             Self::Text => 1,
             Self::Binary => 2,
             Self::Close => 8,
