@@ -1,96 +1,11 @@
 use std::{
     collections::HashMap,
-    io::{BufRead, Cursor},
+    io::{self, BufRead, Cursor},
 };
 
-use tokio::io::AsyncReadExt;
-
-#[derive(Debug)]
-pub enum Method {
-    GET,
-    POST,
-}
-
-impl Method {
-    pub fn parse(&self) -> String {
-        match self {
-            Method::GET => "GET".into(),
-            Method::POST => "POST".into(),
-        }
-    }
-
-    pub fn compose(method: &str) -> Option<Self> {
-        match method {
-            "GET" => Some(Self::GET),
-            "POST" => Some(Self::POST),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum Version {
-    // Http0_9,
-    // Http1_0,
-    Http1_1,
-    // Http2_0,
-}
-
-impl Version {
-    pub fn parse(&self) -> String {
-        match self {
-            // Self::Http0_9 => "HTTP/0.9".into(),
-            // Self::Http1_0 => "HTTP/1.0".into(),
-            Self::Http1_1 => "HTTP/1.1".into(),
-            // Self::Http2_0 => "HTTP/2.0".into(),
-        }
-    }
-
-    pub fn compose(version: &str) -> Option<Self> {
-        match version {
-            // "HTTP/0.9" => Some(Self::Http0_9),
-            // "HTTP/1.0" => Some(Self::Http1_0),
-            "HTTP/1.1" => Some(Self::Http1_1),
-            // "HTTP/2.0" => Some(Self::Http2_0),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum StatusCode {
-    SwitchingProtocols,
-    OK,
-    BadRequest,
-    Forbidden,
-    NotFound,
-    InternalError,
-}
-
-impl StatusCode {
-    pub fn parse(&self) -> String {
-        match self {
-            Self::SwitchingProtocols => "101 Switching Protocols".into(),
-            Self::OK => "200 OK".into(),
-            Self::BadRequest => "400 Bad Request".into(),
-            Self::Forbidden => "403 Forbidden".into(),
-            Self::NotFound => "404 Not Found".into(),
-            Self::InternalError => "500 Internal Error".into(),
-        }
-    }
-
-    pub fn compose(code: i32) -> Option<Self> {
-        match code {
-            101 => Some(Self::SwitchingProtocols),
-            200 => Some(Self::OK),
-            400 => Some(Self::BadRequest),
-            403 => Some(Self::Forbidden),
-            404 => Some(Self::NotFound),
-            500 => Some(Self::InternalError),
-            _ => None,
-        }
-    }
-}
+use base64::{prelude::BASE64_STANDARD, Engine};
+use bytes::Buf;
+use sha1::{Digest, Sha1};
 
 #[derive(Debug)]
 pub enum Opcode {
@@ -129,59 +44,36 @@ impl Opcode {
 
 pub type HeaderMap = HashMap<String, String>;
 
-#[derive(Debug)]
-pub struct WebSocketFrame {
-    pub fin: u8,
-    pub opcode: Opcode,
-    pub masked: bool,
-    pub masking_key: [u8; 4],
-    pub payload: Vec<u8>,
+pub struct Handshake {
+    pub header: Vec<u8>,
+    pub headers: HeaderMap,
 }
 
-#[derive(Debug)]
-pub enum Frame {
-    HandshakeRequest {
-        method: Method,
-        uri: String,
-        version: Version,
-        headers: HeaderMap,
-    },
-    HandshakeResponse {
-        status_code: StatusCode,
-        version: Version,
-        headers: HeaderMap,
-    },
-    WebSocketRequest(WebSocketFrame),
-    WebSocketResponse(WebSocketFrame),
-}
+impl Handshake {
+    pub fn parse(buf: &mut Cursor<&[u8]>) -> io::Result<Self> {
+        let mut header = Vec::new();
 
-impl Frame {
-    pub async fn parse(cursor: &mut Cursor<&[u8]>) -> Option<Self> {
-        let mut buf = Vec::new();
-        _ = cursor.read_to_end(&mut buf).await;
-
-        /* GET */
-        if buf[0..3].eq(&[0x47, 0x45, 0x54]) {
-            return Self::parse_handshake_request(&mut buf);
-        } else {
-            return Self::parse_websocket_frame(&mut buf);
+        while header.len() == 0 || header.last().unwrap() != &b'\n' {
+            header.push(buf.get_u8());
         }
-    }
 
-    fn parse_handshake_request(buf: &Vec<u8>) -> Option<Self> {
-        let method = Method::GET;
-        let mut headers: HeaderMap = HashMap::new();
+        let header_str = String::from_utf8(header.clone()).unwrap();
+        let header_parts: Vec<_> = header_str.split(" ").map(|x| x.trim()).collect();
+
+        let method = header_parts[0];
+        if method != "GET" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "invalid method",
+            ));
+        }
+
+        // let uri = header_parts[1];
+        // let version = header_parts[1];
 
         let lines: Vec<_> = buf.lines().map(|x| x.unwrap()).collect();
 
-        let request = &lines[0];
-        let request_parts: Vec<_> = request.split(" ").collect();
-        let uri = request_parts[1].into();
-        let version = match Version::compose(request_parts[2]) {
-            Some(v) => v,
-            None => return None,
-        };
-
+        let mut headers: HeaderMap = HashMap::new();
         for line in lines.iter() {
             let parts: Vec<_> = line.split(": ").collect();
 
@@ -190,78 +82,77 @@ impl Frame {
             }
         }
 
-        Some(Self::HandshakeRequest {
-            method,
-            uri,
-            version,
-            headers,
-        })
+        Ok(Self { header, headers })
     }
 
-    fn parse_websocket_frame(buf: &Vec<u8>) -> Option<Frame> {
-        let mut idx: usize = 0;
-        let fin = buf[idx] & 0x80;
+    pub fn try_key_handshake(headers: &HeaderMap) -> io::Result<String> {
+        const MAGIC: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-        let opcode = match Opcode::compose(buf[idx] & 0xf) {
+        let key = match headers.get("Sec-WebSocket-Key") {
+            Some(key) => key.to_owned(),
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "handshake failed with client",
+                ))
+            }
+        };
+
+        let mut hasher = Sha1::new();
+        hasher.update(key);
+        hasher.update(MAGIC);
+        let handshake_key = BASE64_STANDARD.encode(hasher.finalize());
+
+        Ok(handshake_key)
+    }
+}
+
+#[derive(Debug)]
+pub struct Frame {
+    pub fin: bool,
+    pub opcode: Opcode,
+    pub payload: Vec<u8>,
+}
+
+impl Frame {
+    pub async fn parse(cursor: &mut Cursor<&[u8]>) -> Option<Self> {
+        let first = cursor.get_u8();
+        let fin = first & 0x80 != 0;
+
+        let opcode = match Opcode::compose(first & 0xf) {
             Some(val) => val,
             None => return None,
         };
-        idx += 1;
 
-        let masked = (buf[idx] & 0x80) == 1;
-        // if !masked {
-        //     return None;
-        // }
+        let second = cursor.get_u8();
+        let masked = (second & 0x80) != 0;
+        if !masked {
+            return None;
+        }
 
-        let mut payload_len = (buf[idx] & 0x7f) as usize;
-        idx += 1;
-
+        let mut payload_len = (second & 0x7f) as usize;
         payload_len = match payload_len {
-            126 => {
-                let val = read_u16_be(&buf[idx..idx + 1]) as usize;
-                idx += 2;
-                val
-            }
-            127 => {
-                let val = read_u64_be(&buf[idx..idx + 7]) as usize;
-                idx += 8;
-                val
-            }
+            126 => cursor.get_u16() as usize,
+            127 => cursor.get_u64() as usize,
             _ => payload_len,
         };
 
-        let masking_key = [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]];
-        idx += 4;
+        let masking_key = [
+            cursor.get_u8(),
+            cursor.get_u8(),
+            cursor.get_u8(),
+            cursor.get_u8(),
+        ];
 
-        let mut payload = Vec::with_capacity(payload_len);
+        let mut payload = vec![0; payload_len];
         for i in 0..payload_len {
-            payload.push(buf[idx] ^ masking_key[i % 4]);
-            idx += 1;
+            payload[i] = cursor.get_u8() ^ masking_key[i % 4];
         }
 
-        Some(Self::WebSocketRequest(WebSocketFrame {
+        Some(Self {
             fin,
             opcode,
-            masked,
-            masking_key,
             payload,
-        }))
+        })
     }
-}
-
-pub fn read_u16_be(buf: &[u8]) -> u16 {
-    assert_eq!(buf.len(), 2);
-    (buf[0] as u16) << 8 | buf[1] as u16
-}
-
-pub fn read_u64_be(buf: &[u8]) -> u64 {
-    assert_eq!(buf.len(), 8);
-    (buf[0] as u64) << 56
-        | (buf[1] as u64) << 48
-        | (buf[2] as u64) << 40
-        | (buf[3] as u64) << 32
-        | (buf[4] as u64) << 24
-        | (buf[5] as u64) << 16
-        | (buf[6] as u64) << 8
-        | buf[7] as u64
 }

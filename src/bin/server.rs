@@ -1,8 +1,8 @@
-use std::{collections::HashMap, net::SocketAddr, pin::Pin, sync::Arc, thread, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use connection::Connection;
 
-use frame::{Frame, Opcode, WebSocketFrame};
+use frame::{Frame, Opcode};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
@@ -27,87 +27,58 @@ async fn main() {
 
         tokio::spawn(async move {
             handle_connection(&clients, socket, sock_addr).await;
-
-            println!("removing socket {}", sock_addr);
-            clients.lock().await.remove(&sock_addr).unwrap();
-            println!("{:?}", clients.lock().await);
+            println!("client {sock_addr} disconnected");
         });
     }
 }
 
-async fn handle_connection(clients: &ClientMap, socket: TcpStream, sock_addr: SocketAddr) {
-    let connection = Arc::new(Mutex::new(Connection::accept(socket).await.unwrap()));
+async fn handle_connection(_clients: &ClientMap, socket: TcpStream, _sock_addr: SocketAddr) {
+    let mut connection = Connection::accept(socket).await.unwrap();
 
-    clients
-        .lock()
-        .await
-        .insert(sock_addr.clone(), connection.clone());
+    let mut open = true;
+    while open {
+        if let Some(frame) = connection.read_frame().await.unwrap() {
+            let response = match frame.opcode {
+                Opcode::Text => Frame {
+                    fin: true,
+                    opcode: frame.opcode,
+                    payload: "Hi client!".into(),
+                },
+                Opcode::Binary => Frame {
+                    fin: true,
+                    opcode: frame.opcode,
+                    payload: "Hi client!".into(),
+                },
+                Opcode::Close => {
+                    open = false;
 
-    let mut close = false;
-    while let Some(frame) = connection.lock().await.read_frame().await.unwrap() {
-        match frame {
-            Frame::WebSocketRequest(request) => {
-                let response = match request.opcode {
-                    // frame::Opcode::Continuation => todo!(),
-                    Opcode::Text => Frame::WebSocketResponse(WebSocketFrame {
-                        fin: 128,
-                        opcode: request.opcode,
-                        masked: false,
-                        masking_key: [0; 4],
-                        payload: "Hi client!".into(),
-                    }),
-                    Opcode::Binary => Frame::WebSocketResponse(WebSocketFrame {
-                        fin: 128,
-                        opcode: request.opcode,
-                        masked: false,
-                        masking_key: [0; 4],
-                        payload: "Hi client!".into(),
-                    }),
-                    Opcode::Close => {
-                        close = true;
-
-                        Frame::WebSocketResponse(WebSocketFrame {
-                            fin: 128,
-                            opcode: request.opcode,
-                            masked: false,
-                            masking_key: [0; 4],
-                            // payload: 1000_u16.to_be_bytes().into(),
-                            payload: [3, 232].into(),
-                        })
+                    Frame {
+                        fin: true,
+                        opcode: frame.opcode,
+                        payload: [3, 232].into(),
                     }
-                    Opcode::Ping => {
-                        println!("Ping");
-
-                        Frame::WebSocketResponse(WebSocketFrame {
-                            fin: 128,
-                            opcode: Opcode::Pong,
-                            masked: false,
-                            masking_key: [0; 4],
-                            payload: request.payload,
-                        })
-                    }
-                    Opcode::Pong => {
-                        println!("Pong");
-                        continue;
-                    }
-                    _ => continue,
-                };
-
-                connection
-                    .lock()
-                    .await
-                    .write_frame(&response)
-                    .await
-                    .unwrap();
-
-                if close {
-                    break;
                 }
-            }
-            _ => break,
-        };
+                Opcode::Ping => {
+                    println!("Ping");
+
+                    Frame {
+                        fin: true,
+                        opcode: Opcode::Pong,
+                        payload: frame.payload,
+                    }
+                }
+                Opcode::Pong => {
+                    println!("Pong");
+                    continue;
+                }
+                _ => continue,
+            };
+
+            connection.write_frame(&response).await.unwrap();
+        } else {
+            open = false;
+        }
     }
 
-    println!("Closing connection for: {:?}", connection);
-    connection.lock().await.close().await;
+    connection.close().await;
 }

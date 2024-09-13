@@ -3,17 +3,13 @@ use std::{
     io::{Cursor, Error, ErrorKind},
 };
 
-use base64::{prelude::BASE64_STANDARD, Engine};
-use frame::{Frame, StatusCode, Version};
-
 use bytes::{Buf, BytesMut};
-use sha1::{Digest, Sha1};
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt, BufWriter},
     net::TcpStream,
 };
 
-use crate::frame::{self, HeaderMap, Opcode};
+use crate::frame::{Frame, Handshake, HeaderMap, Opcode};
 
 //TODO: Implement Dispose
 #[derive(Debug)]
@@ -35,50 +31,79 @@ impl Connection {
     pub async fn accept(socket: TcpStream) -> io::Result<Self> {
         let mut connection = Self::new(socket);
 
-        match connection.read_frame().await.unwrap() {
-            Some(Frame::HandshakeRequest { headers, .. }) => {
-                let key = Self::handle_handshake(&headers)?;
-                let mut header_map = HashMap::new();
+        if let Some(request) = connection.read_handshake().await.unwrap() {
+            let key = Handshake::try_key_handshake(&request.headers)?;
+            let mut header_map = HashMap::new();
 
-                header_map.insert("Upgrade".into(), "websocket".into());
-                header_map.insert("Connection".into(), "Upgrade".into());
-                header_map.insert("Sec-WebSocket-Accept".into(), key.into());
+            header_map.insert("Upgrade".into(), "websocket".into());
+            header_map.insert("Connection".into(), "Upgrade".into());
+            header_map.insert("Sec-WebSocket-Accept".into(), key.into());
 
-                let response = Frame::HandshakeResponse {
-                    status_code: StatusCode::SwitchingProtocols,
-                    version: Version::Http1_1,
+            connection
+                .write_handshake(&Handshake {
+                    header: "HTTP/1.1 101 Swithcing Protocols".into(),
                     headers: header_map,
-                };
+                })
+                .await
+                .unwrap();
 
-                connection.write_frame(&response).await.unwrap();
-                Ok(connection)
+            return Ok(connection);
+        }
+
+        Err(Error::new(
+            ErrorKind::ConnectionRefused,
+            "Invalid upgrade request",
+        ))
+    }
+
+    pub async fn read_handshake(&mut self) -> io::Result<Option<Handshake>> {
+        if self.closed {
+            return Ok(None);
+        }
+
+        loop {
+            if 0 == self.stream.read_buf(&mut self.buffer).await? {
+                if self.buffer.is_empty() {
+                    return Ok(None);
+                } else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "connection reset by the peer",
+                    ));
+                }
+            } else {
+                let request = self.parse_handshake_request().await?;
+                return Ok(Some(request));
             }
-            _ => Err(Error::new(
-                ErrorKind::ConnectionRefused,
-                "Invalid upgrade request",
-            )),
         }
     }
 
-    fn handle_handshake(headers: &HeaderMap) -> io::Result<String> {
-        const MAGIC: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    async fn parse_handshake_request(&mut self) -> io::Result<Handshake> {
+        let mut buf = Cursor::new(self.buffer.chunk());
+        let request = Handshake::parse(&mut buf)?;
 
-        let key = match headers.get("Sec-WebSocket-Key") {
-            Some(key) => key.to_owned(),
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "handshake failed with client",
-                ))
-            }
-        };
+        let len = buf.position() as usize;
+        buf.set_position(0);
 
-        let mut hasher = Sha1::new();
-        hasher.update(key);
-        hasher.update(MAGIC);
-        let handshake_key = BASE64_STANDARD.encode(hasher.finalize());
+        self.buffer.advance(len);
 
-        Ok(handshake_key)
+        Ok(request)
+    }
+
+    async fn write_handshake(&mut self, response: &Handshake) -> io::Result<()> {
+        self.stream.write_all(response.header.as_slice()).await?;
+        self.stream.write_all(b"\r\n").await?;
+
+        for header in response.headers.iter() {
+            self.stream
+                .write_all(format!("{}: {}\r\n", header.0, header.1).as_bytes())
+                .await?
+        }
+
+        self.stream.write_all(b"\r\n").await?;
+        self.stream.flush().await?;
+
+        Ok(())
     }
 
     pub async fn close(&mut self) {
@@ -124,54 +149,24 @@ impl Connection {
     }
 
     pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
-        match frame {
-            Frame::HandshakeResponse {
-                status_code,
-                version,
-                headers,
-            } => {
-                self.stream
-                    .write_all(Version::parse(version).as_bytes())
-                    .await?;
-                self.stream.write_u8(b' ').await?;
-                self.stream
-                    .write_all(StatusCode::parse(status_code).as_bytes())
-                    .await?;
-                self.stream.write_all(b"\r\n").await?;
+        self.stream
+            .write_u8((frame.fin as u8) << 7 | Opcode::parse(&frame.opcode))
+            .await?;
 
-                for header in headers.iter() {
-                    self.stream
-                        .write_all(format!("{}: {}\r\n", header.0, header.1).as_bytes())
-                        .await?
-                }
-
-                self.stream.write_all(b"\r\n").await?;
-                self.stream.flush().await?;
-
-                Ok(())
-            }
-            Frame::WebSocketResponse(response) => {
-                self.stream
-                    .write_u8(response.fin | Opcode::parse(&response.opcode))
-                    .await?;
-
-                let payload_len = response.payload.len();
-                if payload_len <= 125 {
-                    self.stream.write_u8(payload_len as u8).await?;
-                } else if payload_len <= 1 << 16 {
-                    self.stream.write_u8(126).await?;
-                    self.stream.write_u16(payload_len as u16).await?;
-                } else {
-                    self.stream.write_u8(127).await?;
-                    self.stream.write_u32(payload_len as u32).await?;
-                }
-
-                self.stream.write_all(&response.payload).await?;
-                self.stream.flush().await?;
-
-                Ok(())
-            }
-            _ => Ok(()),
+        let payload_len = frame.payload.len();
+        if payload_len <= 125 {
+            self.stream.write_u8(payload_len as u8).await?;
+        } else if payload_len <= 1 << 16 {
+            self.stream.write_u8(126).await?;
+            self.stream.write_u16(payload_len as u16).await?;
+        } else {
+            self.stream.write_u8(127).await?;
+            self.stream.write_u32(payload_len as u32).await?;
         }
+
+        self.stream.write_all(&frame.payload).await?;
+        self.stream.flush().await?;
+
+        Ok(())
     }
 }
