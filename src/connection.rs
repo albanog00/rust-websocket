@@ -123,7 +123,7 @@ impl Connection {
         Ok(None)
     }
 
-    pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<Option<()>> {
+    pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
         match frame {
             Frame::HandshakeResponse {
                 status_code,
@@ -148,7 +148,7 @@ impl Connection {
                 self.stream.write_all(b"\r\n").await?;
                 self.stream.flush().await?;
 
-                Ok(Some(()))
+                Ok(())
             }
             Frame::WebSocketResponse(response) => {
                 self.stream
@@ -169,17 +169,9 @@ impl Connection {
                 self.stream.write_all(&response.payload).await?;
                 self.stream.flush().await?;
 
-                match response.opcode {
-                    Opcode::Close => {
-                        println!("closing connection...");
-                        self.close().await
-                    }
-                    _ => {}
-                };
-
-                Ok(Some(()))
+                Ok(())
             }
-            _ => Ok(None),
+            _ => Ok(()),
         }
     }
 }

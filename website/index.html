@@ -12,7 +12,7 @@
 
     ws.onmessage = (event) => {
         console.log("Data received", event.data)
-        ws.close() // We got the score so we don't need the connection anymore
+        // ws.close() // We got the score so we don't need the connection anymore
     }
 
     ws.onclose = (event) => {
