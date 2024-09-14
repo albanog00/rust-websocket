@@ -3,29 +3,28 @@ use std::{
     io::{Cursor, Error, ErrorKind},
 };
 
-use bytes::{Buf, BytesMut};
+use handshake::Handshake;
 use tokio::{
-    io::{self, AsyncReadExt, AsyncWriteExt, BufWriter},
+    io::{self, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
 };
 
-use crate::frame::{Frame, Handshake, HeaderMap, Opcode};
+use crate::frame::Frame;
 
 //TODO: Implement Dispose
 #[derive(Debug)]
 pub struct Connection {
-    stream: BufWriter<TcpStream>,
-    buffer: BytesMut,
-    closed: bool,
+    reader: ReadHalf<TcpStream>,
+    writer: WriteHalf<TcpStream>,
 }
+
+mod handshake;
 
 impl Connection {
     fn new(stream: TcpStream) -> Self {
-        Self {
-            stream: BufWriter::new(stream),
-            buffer: BytesMut::with_capacity(4096),
-            closed: false,
-        }
+        let (reader, writer) = tokio::io::split(stream);
+
+        Self { reader, writer }
     }
 
     pub async fn accept(socket: TcpStream) -> io::Result<Self> {
@@ -33,6 +32,7 @@ impl Connection {
 
         if let Some(request) = connection.read_handshake().await.unwrap() {
             let key = Handshake::try_key_handshake(&request.headers)?;
+
             let mut header_map = HashMap::new();
 
             header_map.insert("Upgrade".into(), "websocket".into());
@@ -40,7 +40,7 @@ impl Connection {
             header_map.insert("Sec-WebSocket-Accept".into(), key.into());
 
             connection
-                .write_handshake(&Handshake {
+                .send_handshake(&Handshake {
                     header: "HTTP/1.1 101 Swithcing Protocols".into(),
                     headers: header_map,
                 })
@@ -50,6 +50,8 @@ impl Connection {
             return Ok(connection);
         }
 
+        connection.close().await;
+
         Err(Error::new(
             ErrorKind::ConnectionRefused,
             "Invalid upgrade request",
@@ -57,115 +59,70 @@ impl Connection {
     }
 
     pub async fn read_handshake(&mut self) -> io::Result<Option<Handshake>> {
-        if self.closed {
+        let mut buf = Vec::with_capacity(8192);
+
+        if 0 == self.reader.read_buf(&mut buf).await? {
             return Ok(None);
         }
 
-        loop {
-            if 0 == self.stream.read_buf(&mut self.buffer).await? {
-                if self.buffer.is_empty() {
-                    return Ok(None);
-                } else {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::ConnectionReset,
-                        "connection reset by the peer",
-                    ));
-                }
-            } else {
-                let request = self.parse_handshake_request().await?;
-                return Ok(Some(request));
-            }
-        }
+        let request = self.parse_handshake(&mut buf).await?;
+        Ok(Some(request))
     }
 
-    async fn parse_handshake_request(&mut self) -> io::Result<Handshake> {
-        let mut buf = Cursor::new(self.buffer.chunk());
-        let request = Handshake::parse(&mut buf)?;
-
-        let len = buf.position() as usize;
-        buf.set_position(0);
-
-        self.buffer.advance(len);
+    async fn parse_handshake(&mut self, buf: &mut Vec<u8>) -> io::Result<Handshake> {
+        let mut cursor = Cursor::new(buf.as_slice());
+        let request = Handshake::parse(&mut cursor)?;
 
         Ok(request)
     }
 
-    async fn write_handshake(&mut self, response: &Handshake) -> io::Result<()> {
-        self.stream.write_all(response.header.as_slice()).await?;
-        self.stream.write_all(b"\r\n").await?;
+    async fn send_handshake(&mut self, response: &Handshake) -> io::Result<()> {
+        self.writer.write_all(response.header.as_slice()).await?;
+        self.writer.write_all(b"\r\n").await?;
 
         for header in response.headers.iter() {
-            self.stream
+            self.writer
                 .write_all(format!("{}: {}\r\n", header.0, header.1).as_bytes())
                 .await?
         }
 
-        self.stream.write_all(b"\r\n").await?;
-        self.stream.flush().await?;
+        self.writer.write_all(b"\r\n").await?;
+        self.writer.flush().await?;
 
         Ok(())
     }
 
-    pub async fn close(&mut self) {
-        self.closed = true;
-        self.stream.shutdown().await.unwrap();
-    }
-
     pub async fn read_frame(&mut self) -> io::Result<Option<Frame>> {
-        if self.closed {
+        let mut buf = Vec::with_capacity(8192);
+
+        if 0 == self.reader.read_buf(&mut buf).await? {
             return Ok(None);
         }
 
-        loop {
-            if 0 == self.stream.read_buf(&mut self.buffer).await? {
-                if self.buffer.is_empty() {
-                    return Ok(None);
-                } else {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::ConnectionReset,
-                        "connection reset by the peer",
-                    ));
-                }
-            } else {
-                if let Some(frame) = self.parse_frame().await? {
-                    return Ok(Some(frame));
-                }
-            }
+        if let Some(frame) = self.parse_frame(&mut buf).await? {
+            return Ok(Some(frame));
         }
+
+        Err(Error::new(ErrorKind::InvalidData, "Invalid frame"))
     }
 
-    async fn parse_frame(&mut self) -> io::Result<Option<Frame>> {
-        let mut buf = Cursor::new(self.buffer.chunk());
+    async fn parse_frame(&mut self, buf: &mut Vec<u8>) -> io::Result<Option<Frame>> {
+        let mut buf = Cursor::new(buf.as_slice());
 
         if let Some(frame) = Frame::parse(&mut buf).await {
-            let len = buf.position() as usize;
-            buf.set_position(0);
-
-            self.buffer.advance(len);
             return Ok(Some(frame));
         }
 
         Ok(None)
     }
 
-    pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
-        self.stream
-            .write_u8((frame.fin as u8) << 7 | Opcode::parse(&frame.opcode))
-            .await?;
+    pub async fn close(&mut self) {
+        self.writer.shutdown().await.unwrap();
+    }
 
-        let payload_len = frame.payload.len();
-        if payload_len <= 125 {
-            self.stream.write_u8(payload_len as u8).await?;
-        } else if payload_len <= 1 << 16 {
-            self.stream.write_u8(126).await?;
-            self.stream.write_u16(payload_len as u16).await?;
-        } else {
-            self.stream.write_u8(127).await?;
-            self.stream.write_u32(payload_len as u32).await?;
-        }
-
-        self.stream.write_all(&frame.payload).await?;
-        self.stream.flush().await?;
+    pub async fn send_frame(&mut self, frame: &mut Frame) -> io::Result<()> {
+        self.writer.write_all(&frame.encode()).await?;
+        self.writer.flush().await?;
 
         Ok(())
     }

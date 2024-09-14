@@ -38,7 +38,7 @@ async fn handle_connection(_clients: &ClientMap, socket: TcpStream, _sock_addr: 
     let mut open = true;
     while open {
         if let Some(frame) = connection.read_frame().await.unwrap() {
-            let response = match frame.opcode {
+            let mut response = match frame.opcode {
                 Opcode::Text => Frame {
                     fin: true,
                     opcode: frame.opcode,
@@ -74,7 +74,7 @@ async fn handle_connection(_clients: &ClientMap, socket: TcpStream, _sock_addr: 
                 _ => continue,
             };
 
-            connection.write_frame(&response).await.unwrap();
+            connection.send_frame(&mut response).await.unwrap();
         } else {
             open = false;
         }
