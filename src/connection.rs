@@ -37,7 +37,7 @@ impl Connection {
 
             header_map.insert("Upgrade".into(), "websocket".into());
             header_map.insert("Connection".into(), "Upgrade".into());
-            header_map.insert("Sec-WebSocket-Accept".into(), key.into());
+            header_map.insert("Sec-WebSocket-Accept".into(), key);
 
             connection
                 .send_handshake(&Handshake {
@@ -116,14 +116,14 @@ impl Connection {
         Ok(None)
     }
 
-    pub async fn close(&mut self) {
-        self.writer.shutdown().await.unwrap();
-    }
-
     pub async fn send_frame(&mut self, frame: &mut Frame) -> io::Result<()> {
         self.writer.write_all(&frame.encode()).await?;
         self.writer.flush().await?;
 
         Ok(())
+    }
+
+    pub async fn close(&mut self) {
+        self.writer.shutdown().await.unwrap();
     }
 }

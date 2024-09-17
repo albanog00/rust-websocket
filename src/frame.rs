@@ -1,4 +1,4 @@
-use bytes::{Buf, Bytes};
+use bytes::Buf;
 use std::io::Cursor;
 
 #[derive(Debug)]
@@ -12,7 +12,7 @@ pub enum Opcode {
 }
 
 impl Opcode {
-    pub fn compose(&self) -> u8 {
+    pub fn as_value(&self) -> u8 {
         match self {
             Self::Continuation => 0,
             Self::Text => 1,
@@ -91,7 +91,7 @@ impl Frame {
 
         println!("Decoding frame: {:?}", self);
 
-        buf.push((self.fin as u8) << 7 | self.opcode.compose());
+        buf.push((self.fin as u8) << 7 | self.opcode.as_value());
 
         let len = self.payload.len();
         if len <= 125 {

@@ -18,7 +18,7 @@ impl Handshake {
     pub fn parse(buf: &mut Cursor<&[u8]>) -> io::Result<Self> {
         let mut header = Vec::new();
 
-        while header.len() == 0 || header.last().unwrap() != &b'\n' {
+        while header.is_empty() || header.last().unwrap() != &b'\n' {
             header.push(buf.get_u8());
         }
 
@@ -34,11 +34,11 @@ impl Handshake {
         }
 
         // let uri = header_parts[1];
-        // let version = header_parts[1];
+        // let version = header_parts[2];
 
         let lines: Vec<_> = buf.lines().map(|x| x.unwrap()).collect();
 
-        let mut headers: HeaderMap = HashMap::new();
+        let mut headers = HeaderMap::new();
         for line in lines.iter() {
             let parts: Vec<_> = line.split(": ").collect();
 
