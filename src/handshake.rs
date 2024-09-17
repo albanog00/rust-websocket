@@ -3,12 +3,14 @@ use std::{
     io::{self, BufRead, Cursor},
 };
 
-use base64::{prelude::BASE64_STANDARD, Engine};
 use bytes::Buf;
 use sha1::{Digest, Sha1};
 
+use crate::base64_encode;
+
 pub type HeaderMap = HashMap<String, String>;
 
+#[derive(Debug)]
 pub struct Handshake {
     pub header: Vec<u8>,
     pub headers: HeaderMap,
@@ -23,16 +25,9 @@ impl Handshake {
         }
 
         let header_str = String::from_utf8(header.clone()).unwrap();
-        let header_parts: Vec<_> = header_str.split(" ").map(|x| x.trim()).collect();
+        let _header_parts: Vec<_> = header_str.split(" ").map(|x| x.trim()).collect();
 
-        let method = header_parts[0];
-        if method != "GET" {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "invalid method",
-            ));
-        }
-
+        // let method = header_parts[0];
         // let uri = header_parts[1];
         // let version = header_parts[2];
 
@@ -66,8 +61,24 @@ impl Handshake {
         let mut hasher = Sha1::new();
         hasher.update(key);
         hasher.update(MAGIC);
-        let handshake_key = BASE64_STANDARD.encode(hasher.finalize());
+        let handshake_key = base64_encode(hasher.finalize());
 
         Ok(handshake_key)
+    }
+
+    pub fn encode(&mut self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.append(&mut self.header);
+        buf.append(&mut b"\r\n".to_vec());
+
+        for header in self.headers.iter() {
+            buf.append(
+                &mut format!("{}: {}\r\n\r\n", header.0, header.1)
+                    .as_bytes()
+                    .to_vec(),
+            );
+        }
+
+        buf
     }
 }

@@ -1,18 +1,10 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
-use connection::Connection;
-
-use frame::{Frame, Opcode};
+use rust_websocket::{Connection, Frame, Opcode};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Mutex,
 };
-
-#[path = "../connection.rs"]
-mod connection;
-
-#[path = "../frame.rs"]
-mod frame;
 
 type ClientMap = Arc<Mutex<HashMap<SocketAddr, Arc<Mutex<Connection>>>>>;
 
