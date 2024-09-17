@@ -135,7 +135,12 @@ impl Connection {
     async fn parse_frame(&mut self, buf: &mut Vec<u8>) -> io::Result<Option<Frame>> {
         let mut buf = Cursor::new(buf.as_slice());
 
-        if let Some(frame) = Frame::parse(&mut buf, self.is_server).await {
+        let frame = match self.is_server {
+            true => Frame::parse(&mut buf).await,
+            false => Frame::parse_without_mask(&mut buf).await,
+        };
+
+        if let Some(frame) = frame {
             return Ok(Some(frame));
         }
 

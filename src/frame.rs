@@ -46,7 +46,7 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub async fn parse(cursor: &mut Cursor<&[u8]>, is_server: bool) -> Option<Self> {
+    pub async fn parse(cursor: &mut Cursor<&[u8]>) -> Option<Self> {
         let first = cursor.get_u8();
         let fin = first & 0x80 != 0;
 
@@ -57,7 +57,7 @@ impl Frame {
 
         let second = cursor.get_u8();
         let masked = (second & 0x80) != 0;
-        if is_server && !masked {
+        if !masked {
             return None;
         }
 
@@ -67,23 +67,52 @@ impl Frame {
             val => val as usize,
         };
 
-        let mut payload = vec![0; payload_len];
-        if is_server {
-            let masking_key = [
-                cursor.get_u8(),
-                cursor.get_u8(),
-                cursor.get_u8(),
-                cursor.get_u8(),
-            ];
+        let masking_key = [
+            cursor.get_u8(),
+            cursor.get_u8(),
+            cursor.get_u8(),
+            cursor.get_u8(),
+        ];
 
-            for i in 0..payload_len {
-                payload[i] = cursor.get_u8() ^ masking_key[i % 4];
-            }
-        } else {
-            for i in 0..payload_len {
-                payload[i] = cursor.get_u8();
-            }
+        let mut payload = vec![0; payload_len];
+        for i in 0..payload_len {
+            payload[i] = cursor.get_u8() ^ masking_key[i % 4];
         }
+
+        println!("End of stream");
+
+        Some(Self {
+            fin,
+            opcode,
+            payload,
+        })
+    }
+
+    pub async fn parse_without_mask(cursor: &mut Cursor<&[u8]>) -> Option<Self> {
+        let first = cursor.get_u8();
+        let fin = first & 0x80 != 0;
+
+        let opcode = match Opcode::parse(first & 0xf) {
+            Some(val) => val,
+            None => return None,
+        };
+
+        let second = cursor.get_u8();
+        let masked = (second & 0x80) != 0;
+        if masked {
+            return None
+        }
+
+        let payload_len = match second & 0x7f {
+            126 => cursor.get_u16() as usize,
+            127 => cursor.get_u64() as usize,
+            val => val as usize,
+        };
+
+        let mut payload = vec![0; payload_len];
+        (0..payload_len).for_each(|i| {
+            payload[i] = cursor.get_u8();
+        });
 
         println!("End of stream");
 
